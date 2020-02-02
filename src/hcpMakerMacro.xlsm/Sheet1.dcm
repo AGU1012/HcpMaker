@@ -1,0 +1,377 @@
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "Sheet1"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+'// ******************************************************** //
+'// Python形式のテキストからHCP図を作成するツール            //
+'// 最終更新日  : 2020.02.02                                 //
+'// 作成者      : AGU1012                                    //
+'// ******************************************************** //
+
+Option Explicit
+Option Base 0
+
+Private Const glbStartPosX = 100    '// 描画開始地点のX座標
+Private Const glbStartPosY = 100    '// 描画開始地点のY座標
+Private Const glbDiffX = 10         '// 図形と図形の間隔（X方向）
+Private Const glbDiffY = 10         '// 図形と図形の間隔（Y方向）
+Private Const glbShapeHeight = 20   '// 図形の縦幅（横幅は本変数との比率で決める）
+Private Const glbLineWeight = 1     '// 図形の枠線の太さ
+Private Const glbFontSize = 15      '// フォントサイズ
+
+'// ******************************************************** //
+'// メイン関数                                               //
+'// Input :                                                  //
+'// Output:                                                  //
+'// ******************************************************** //
+Sub Main(filePath)
+    Dim myTxtFile       As String
+    Dim myFNo           As Integer  '// FreeFile値
+    Dim myBuf           As String   '// マッチ対象文字列
+    Dim myBufOnlyStr    As String '// myBufからスペース、タブ、改行コード抜いたもの
+    Dim iTabCnt         As Integer  '// 文字列先頭からのタブ数(処理中の行)
+    Dim iPreTabCnt      As Integer  '// 文字列先頭からのタブ数(一つ前の行）
+    Dim iLineNum        As Integer  '// テキストの解析中の行
+    
+    Dim iPosX           As Integer  '// 追加するshapeのX座標
+    Dim iPosY           As Integer  '// 追加するshapeのY座標
+    Dim preShape(10)    As shape    '// 一つ前のshape
+    Dim iPrePosX(10)    As Integer  '// shapeのX座標（一つ前の行）
+    Dim iPrePosY(10)    As Integer  '// shapeのY座標（一つ前の行）
+    
+    
+    '// テキストファイルのフルパス
+    myTxtFile = filePath
+    
+    '// FreeFile値の取得（以降この値で入出力する）
+    myFNo = FreeFile
+    '// 指定ファイルをOPEN（入力モード）
+    Open myTxtFile For Input As #myFNo
+    
+    '// アクティブシート上の図形をすべて削除する
+    Call shapeClear
+    
+    '// ファイルをEOF(End Of File)まで繰り返す
+    iLineNum = 0
+    Do Until EOF(myFNo)
+        '// 文字列を1行分読み込む
+        Line Input #myFNo, myBuf
+        Debug.Print myBuf
+        
+        '// 文字ない場合は、Continueまで処理をスキップする。
+        '// スペース、タブ、改行コードを削除
+        myBufOnlyStr = Replace(myBuf, vbTab, "")
+        myBufOnlyStr = Replace(myBufOnlyStr, vbCrLf, "")
+        myBufOnlyStr = Replace(myBufOnlyStr, vbCr, "")
+        myBufOnlyStr = Replace(myBufOnlyStr, vbVerticalTab, "")
+        If Len(Trim(myBufOnlyStr)) = 0 Then
+            GoTo Continue
+        End If
+        
+        
+        '// 文字列先頭からのタブ数を取得
+        iTabCnt = tabCounter(myBuf)
+        
+        '// 文字列先頭からiTabCnt個のタブを""に置き換える
+        myBuf = Replace(myBuf, vbTab, "", 1, iTabCnt)
+        Debug.Print myBuf
+        
+        '// shape2のX座標とY座標を設定
+        '// X: 初期値 + (図形の横幅 + 図形と図形の間隔) * タブ数
+        '// Y: 初期値 + (図形の縦幅 + 図形と図形の間隔) * 処理中の行番号
+        iPosX = glbStartPosX + (glbShapeHeight * 1 + glbDiffX) * iTabCnt
+        iPosY = glbStartPosY + (glbShapeHeight + glbDiffY) * iLineNum
+    
+        '// 一つ前の行より現在の行のタブ数が少ない場合は、
+        '// (1) preShape(iPreTabCnt)に"処理の終了"記号を接続する
+        '// (2) preShape(iPreTabCnt)を初期化する
+        If iTabCnt < iPreTabCnt Then
+            Dim j As Integer
+            For j = iPreTabCnt To iTabCnt + 1 Step -1
+                Debug.Print "tabcnt: " & j
+                Call hcpEndProcess(preShape(j), iPrePosX(j), iPrePosY(j) + glbShapeHeight + glbDiffY * 0.8)
+                Set preShape(j) = Nothing
+            Next j
+        End If
+        
+        '// HCP図の更新
+        '// else, elifの場合は、テキストボックスの追加のみ行う
+        Dim connectShapeId As Integer
+        If InStr(myBuf, "else") = 1 Then
+            myBuf = Replace(myBuf, "else", "")
+            Call hcpMakerElse(iPosX, iPosY, myBuf)
+        ElseIf InStr(myBuf, "elif") = 1 Then
+            myBuf = Replace(myBuf, "elif", "")
+            Call hcpMakerElse(iPosX, iPosY, myBuf)
+        Else
+            connectShapeId = findConnectShapeId(preShape, iTabCnt)
+            Set preShape(iTabCnt) = hcpMaker(preShape(connectShapeId), iPosX, iPosY, myBuf)
+        End If
+
+        '// 一つ前の行の情報を残す
+        iPreTabCnt = iTabCnt
+        iPrePosX(iPreTabCnt) = iPosX
+        iPrePosY(iPreTabCnt) = iPosY
+        
+        iLineNum = iLineNum + 1
+        Debug.Print "*****************"
+        
+        
+'// 文字ない場合は、ここまで処理をスキップする。
+Continue:
+
+    Loop
+    
+    '// "処理の終了"記号を接続する
+    Dim i           As Integer
+    For i = iTabCnt To 0 Step -1
+        
+        If Not preShape(i) Is Nothing Then
+            Call hcpEndProcess(preShape(i), preShape(i).Left, preShape(i).Top + glbShapeHeight + glbDiffY * 0.8)
+        End If
+    Next i
+    
+    '// "処理の開始"記号を接続する
+    Call hcpEndProcess(preShape(0), preShape(0).Left, preShape(0).Top - glbDiffY * 1)
+    
+End Sub
+
+'// ******************************************************** //
+'// 文字列先頭からのタブ数を返す関数                         //
+'// Input : 文字列（1行）                                    //
+'// Output: 文字列先頭からのタブ数                           //
+'// ******************************************************** //
+Function tabCounter(sBuf As String) As Integer
+    Dim i       As Integer
+    Dim tabcnt  As Integer
+    
+    tabcnt = 0
+    For i = 1 To Len(sBuf)
+        If Mid(sBuf, i, 1) = vbTab Then
+            tabcnt = tabcnt + 1
+        Else
+            '// タブ以外の文字が見つかったらForループを抜ける
+            Exit For
+        End If
+    Next
+    
+    '// 関数の返り値をセット
+    tabCounter = tabcnt
+    
+End Function
+
+'// ******************************************************** //
+'// HCP図を更新する関数                                      //
+'// Input :                                                  //
+'// Output:                                                  //
+'// ******************************************************** //
+Function hcpMaker(preShape As shape, nextShape_X As Integer, nextShape_Y As Integer, sText As String) As shape
+    Dim nextShape   As shape    '// 追加する図形
+    Dim textBox     As shape    '// 追加するテキストボックス
+    Dim connector   As shape    '// 追加するコネクタ
+    
+    Dim shapeWidth  As Integer  '// 追加する図形の横幅
+    shapeWidth = glbShapeHeight * 1
+    
+    
+    '// 図形（楕円）を追加する
+    Set nextShape = ActiveSheet.Shapes.AddShape(msoShapeOval, nextShape_X, nextShape_Y, shapeWidth, glbShapeHeight)
+    With nextShape
+        .Fill.ForeColor.RGB = RGB(255, 255, 255)
+        .Line.ForeColor.RGB = RGB(0, 0, 0)
+        .Line.Weight = glbLineWeight
+    End With
+    
+    '// 最初の文字列に対応した処理を実行する
+    '// (1)if
+    '// (2)for
+    '// (3)def
+    '// (4)その他
+    If InStr(sText, "if") = 1 Then
+        sText = Replace(sText, "if", "")
+        With nextShape
+            .TextFrame2.TextRange.Characters().Text = "→"
+            .TextFrame2.TextRange.Characters().Font.Size = glbFontSize
+            .TextFrame2.TextRange.Characters().Font.Fill.ForeColor.RGB = RGB(0, 0, 0)
+            .TextFrame2.VerticalAnchor = msoAnchorMiddle
+            .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End With
+        
+    ElseIf InStr(sText, "for") = 1 Then
+        sText = Replace(sText, "for", "")
+        With nextShape
+            '// 環境依存文字なのでユニコードの番号で指定
+            '// 以下のデバッグコードでA1セルに入れた文字のコードがわかる
+            '// Debug.Print AscW(Range("A1"))
+            .TextFrame2.TextRange.Characters().Text = ChrW(8635)
+            .TextFrame2.TextRange.Characters().Font.Size = glbFontSize
+            .TextFrame2.TextRange.Characters().Font.Fill.ForeColor.RGB = RGB(0, 0, 0)
+            .TextFrame2.VerticalAnchor = msoAnchorMiddle
+            .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End With
+        
+    ElseIf InStr(sText, "def") = 1 Then
+        sText = Replace(sText, "def", "")
+    Else
+    
+    End If
+        
+        
+    '// すでに図形がある場合は、その図形とコネクタを接続する
+    'Debug.Print TypeName(preShape)
+    'Debug.Print IsNull(preShape)
+    If preShape Is Nothing Then
+        'Debug.Print "preShape: Nothing"
+    Else
+        'Debug.Print "preShape.Left: " & preShape.Left
+        
+        '// コネクタ描画
+        '// (1)前の図形と追加する図形のX座標が等しい場合は直線コネクタを使う
+        '// (2)前の図形と追加する図形のX座標が異なる場合はカギ線コネクタ（or 曲線コネクタ）を使う
+        If preShape.Left = nextShape_X Then
+            Set connector = ActiveSheet.Shapes.AddConnector(msoConnectorStraight, 1, 1, 1, 1)   '// 直線コネクタ
+            With connector
+                '// コネクタを接続
+                .ConnectorFormat.BeginConnect preShape, 1
+                .ConnectorFormat.EndConnect nextShape, 1
+                .RerouteConnections
+    
+                '// コネクタの色と太さを設定
+                .Line.ForeColor.RGB = RGB(0, 0, 0)
+                .Line.Weight = glbLineWeight
+            End With
+        Else
+            Set connector = ActiveSheet.Shapes.AddConnector(msoConnectorElbow, 1, 1, 1, 1)      '// カギ線コネクタ
+            With connector
+                '// コネクタを接続
+                .ConnectorFormat.BeginConnect preShape, 6
+                .ConnectorFormat.EndConnect nextShape, 1
+                '.RerouteConnections    '// RerouteConnectionsすると最短で接続するのでコメントアウト
+    
+                '// コネクタの色と太さを設定
+                .Line.ForeColor.RGB = RGB(0, 0, 0)
+                .Line.Weight = glbLineWeight
+                
+                '// カギ線コネクタの頂点を設定(.Heightは固定値だったため、.Topの差分で高さを求めた)
+                .Adjustments.Item(1) = (nextShape.Top - preShape.Top - glbDiffY) / (nextShape.Top - preShape.Top)
+            End With
+        End If
+        
+    End If
+    
+    '// テキストボックスを追加する
+    Set textBox = ActiveSheet.Shapes.AddTextbox(msoTextOrientationHorizontal, nextShape_X + shapeWidth, nextShape_Y, shapeWidth, glbShapeHeight)
+    With textBox
+        .TextFrame2.TextRange.Characters().Text = sText     '// 引数sTextとして受け取った文字列を追加
+        .TextFrame2.WordWrap = msoFalse                     '// 文字列を折り返さない
+        .TextFrame2.AutoSize = msoAutoSizeShapeToFitText    '// テキストボックスの大きさを文字列に合わせる
+        .Fill.Visible = msoFalse                            '// テキストボックスの背景をなしにする
+        .Line.Visible = msoFalse                            '// テキストボックスの枠線をなしにする
+    End With
+    
+    '// 関数の返り値をセット
+    Set hcpMaker = nextShape
+    
+End Function
+
+
+'// ******************************************************** //
+'// HCP図を更新する関数(else, elif)                          //
+'// Input :                                                  //
+'// Output:                                                  //
+'// ******************************************************** //
+Function hcpMakerElse(nextShape_X As Integer, nextShape_Y As Integer, sText As String)
+    Dim textBox     As shape    '// 追加するテキストボックス
+    Dim shapeWidth  As Integer  '// 追加する図形の横幅
+    shapeWidth = glbShapeHeight * 1
+    
+    '// テキストボックスを追加する
+    Set textBox = ActiveSheet.Shapes.AddTextbox(msoTextOrientationHorizontal, nextShape_X + shapeWidth, nextShape_Y, shapeWidth, glbShapeHeight)
+    With textBox
+        .TextFrame2.TextRange.Characters().Text = sText     '// 引数sTextとして受け取った文字列を追加
+        .TextFrame2.WordWrap = msoFalse                     '// 文字列を折り返さない
+        .TextFrame2.AutoSize = msoAutoSizeShapeToFitText    '// テキストボックスの大きさを文字列に合わせる
+        .Fill.Visible = msoFalse                            '// テキストボックスの背景をなしにする
+        .Line.Visible = msoFalse                            '// テキストボックスの枠線をなしにする
+    End With
+
+End Function
+
+
+
+'// ******************************************************** //
+'// HCP図の"処理の終了"記号を接続する関数                    //
+'// Input :                                                  //
+'// Output:                                                  //
+'// ******************************************************** //
+Function hcpEndProcess(preShape As shape, nextShape_X As Integer, nextShape_Y As Integer)
+    Dim nextShape   As shape    '// 追加する図形
+    Dim connector   As shape    '// 追加するコネクタ
+    
+    Dim shapeWidth  As Integer  '// 追加する図形の横幅
+    Dim diffWidth   As Integer  '// "処理"記号の横幅との差
+    shapeWidth = glbShapeHeight * 0.6
+    diffWidth = glbShapeHeight - shapeWidth
+    
+    
+    '// 図形（四角）を追加する
+    Set nextShape = ActiveSheet.Shapes.AddShape(msoShapeRectangle, nextShape_X + diffWidth / 2, nextShape_Y, shapeWidth, glbLineWeight / 2)
+    With nextShape
+        .Fill.ForeColor.RGB = RGB(255, 255, 255)
+        .Line.ForeColor.RGB = RGB(0, 0, 0)
+        .Line.Weight = glbLineWeight
+    End With
+    
+    '// コネクタ描画
+    '// (1)前の図形と追加する図形のX座標が等しい場合は直線コネクタを使う
+    '// (2)前の図形と追加する図形のX座標が異なる場合はカギ線コネクタ（or 曲線コネクタ）を使う
+    Set connector = ActiveSheet.Shapes.AddConnector(msoConnectorStraight, 1, 1, 1, 1)   '// 直線コネクタ
+    With connector
+        '// コネクタを接続
+        .ConnectorFormat.BeginConnect preShape, 1
+        .ConnectorFormat.EndConnect nextShape, 1
+        .RerouteConnections
+
+        '// コネクタの色と太さを設定
+        .Line.ForeColor.RGB = RGB(0, 0, 0)
+        .Line.Weight = glbLineWeight
+    End With
+
+End Function
+
+'// ******************************************************** //
+'// コネクタを接続するshapeを返す関数                        //
+'// Input :                                                  //
+'// Output:                                                  //
+'// ******************************************************** //
+Function findConnectShapeId(shape() As shape, iNowTabCnt As Integer) As Integer
+    Dim i           As Integer
+    
+    For i = iNowTabCnt To 0 Step -1
+        
+        If Not shape(i) Is Nothing Then
+            findConnectShapeId = i
+            Exit For
+        End If
+    Next i
+    
+End Function
+
+'// ******************************************************** //
+'// アクティブシート上の図形をすべて削除する関数             //
+'// Input :                                                  //
+'// Output:                                                  //
+'// ******************************************************** //
+Function shapeClear()
+    Dim shape       As shape
+    
+    For Each shape In ActiveSheet.Shapes
+        shape.Delete
+    Next shape
+    
+End Function
